@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Adjustments, ActiveTool } from '@/hooks/useImageEditor'
 import { COLOR_FILTER_LABELS, type ColorFilterName } from '@/lib/imageOps'
 import type { FilterType } from '@/lib/api'
@@ -28,7 +28,8 @@ function Slider({ label, value, min, max, step=1, onChange, display }: {
   return (
     <div>
       <div className="flex justify-between mb-1.5">
-        <span className="text-xs text-gray-500">{label}</span>
+        <span className="text-xs text-gray-500 select-none" title="Double-click to reset"
+          onDoubleClick={()=>onChange(Math.max(min, Math.min(max, 0)))}>{label}</span>
         <span className="text-xs font-mono text-gray-300">{display ?? value}</span>
       </div>
       <div className="relative">
@@ -44,15 +45,21 @@ function Slider({ label, value, min, max, step=1, onChange, display }: {
 
 // ── Algorithms Tab ────────────────────────────────────────────────────────────
 
-function AlgorithmsTab({ onApply, loading }: {
-  onApply:(f:FilterType,p:{kernelSize:number;sigma:number;k:number})=>void; loading:boolean
+const ALGO_INFO: Record<FilterType, string> = {
+  gaussian: 'Softens the image with a true Gaussian convolution.',
+  sobel: 'Detects edges — G = √(Gx²+Gy²)',
+  kmeans: 'Reduces the image to K dominant colours.',
+}
+
+function AlgorithmsTab({ onApply, loading, hasImage }: {
+  onApply:(f:FilterType,p:{kernelSize:number;sigma:number;k:number})=>void; loading:boolean; hasImage:boolean
 }) {
   const [filter, setFilter] = useState<FilterType>('gaussian')
   const [ks, setKs] = useState(5); const [sigma, setSigma] = useState(1.0); const [k, setK] = useState(8)
 
   return (
     <div className="space-y-4">
-      <p className="text-[11px] text-gray-600 leading-relaxed">Backend-processed algorithms — results replace the source image.</p>
+      <p className="text-[11px] text-gray-600 leading-relaxed">Server-side matrix algorithms — applied to the current image, edits preserved. Undo to revert.</p>
       <div className="grid grid-cols-3 gap-1.5">
         {(['gaussian','sobel','kmeans'] as FilterType[]).map(f=>(
           <button key={f} onClick={()=>setFilter(f)}
@@ -68,16 +75,16 @@ function AlgorithmsTab({ onApply, loading }: {
           <Slider label="Kernel size" value={ks} min={3} max={21} step={2} onChange={setKs} display={`${ks}×${ks}`} />
           <Slider label="Sigma σ" value={sigma} min={0.1} max={5} step={0.1} onChange={setSigma} display={sigma.toFixed(1)} />
         </>}
-        {filter==='sobel' && <p className="text-xs text-gray-600 py-2">Detects edges — <span className="font-mono text-gray-500">G = √(Gx²+Gy²)</span></p>}
+        {filter!=='gaussian' && <p className="text-xs text-gray-600 py-2">{ALGO_INFO[filter]}</p>}
         {filter==='kmeans' && <Slider label="Palette K" value={k} min={2} max={32} onChange={setK} />}
       </div>
-      <button onClick={()=>onApply(filter,{kernelSize:ks,sigma,k})} disabled={loading}
+      <button onClick={()=>onApply(filter,{kernelSize:ks,sigma,k})} disabled={loading || !hasImage}
         className="w-full py-2.5 rounded-xl font-semibold text-sm transition-all duration-150 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-lg shadow-indigo-500/20 disabled:opacity-40 disabled:cursor-not-allowed">
         {loading ? (
           <span className="flex items-center justify-center gap-2">
             <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin"/>Processing
           </span>
-        ) : 'Apply to Source'}
+        ) : hasImage ? 'Apply' : 'Upload an image first'}
       </button>
     </div>
   )
@@ -88,22 +95,26 @@ function AlgorithmsTab({ onApply, loading }: {
 const FILTER_COLORS: Partial<Record<ColorFilterName,string>> = {
   red:'#ef4444', green:'#22c55e', blue:'#3b82f6', sepia:'#d97706',
   grayscale:'#6b7280', invert:'#a855f7', cool:'#0ea5e9', warm:'#f97316',
-  vintage:'#84cc16', dramatic:'#1e293b', matte:'#94a3b8', fade:'#cbd5e1',
-  cyberpunk:'#ec4899', noir:'#1f2937',
+  vintage:'#84cc16', dramatic:'#64748b', matte:'#94a3b8', fade:'#cbd5e1',
+  cyberpunk:'#ec4899', noir:'#475569',
 }
 
 function FiltersTab({ value, onChange }: { value: ColorFilterName; onChange:(f:ColorFilterName)=>void }) {
   const filters = Object.keys(COLOR_FILTER_LABELS) as ColorFilterName[]
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-gray-600">Instant color presets applied client-side.</p>
+      <p className="text-[11px] text-gray-600">Instant colour presets — non-destructive, applied live.</p>
       <div className="grid grid-cols-3 gap-1.5">
         {filters.map(f=>(
           <button key={f} onClick={()=>onChange(f)}
-            className={`py-2.5 text-[11px] rounded-xl font-medium transition-all duration-150 relative overflow-hidden ${value===f
+            className={`py-2.5 text-[11px] rounded-xl font-medium transition-all duration-150 relative overflow-hidden flex items-center justify-center gap-1.5 ${value===f
               ?'text-white ring-1 ring-white/30 shadow-lg'
               :'text-gray-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08]'}`}
             style={value===f ? { background:`linear-gradient(135deg,${FILTER_COLORS[f]??'#6366f1'}88,${FILTER_COLORS[f]??'#6366f1'}44)` } : {}}>
+            {f !== 'none' && (
+              <span className="w-2 h-2 rounded-full shrink-0 ring-1 ring-white/20"
+                style={{background: FILTER_COLORS[f] ?? '#6366f1'}} />
+            )}
             {COLOR_FILTER_LABELS[f]}
           </button>
         ))}
@@ -144,40 +155,58 @@ function AdjustTab({ adj, onChange }: { adj: Adjustments; onChange:(a:Adjustment
 
 // ── Transform Tab ─────────────────────────────────────────────────────────────
 
-function TransformTab({ onRotateCW,onRotateCCW,onFlipX,onFlipY,onResize,onCrop }: {
+function TransformTab({ onRotateCW,onRotateCCW,onFlipX,onFlipY,onResize,onCrop,imageDims,hasImage }: {
   onRotateCW:()=>void; onRotateCCW:()=>void; onFlipX:()=>void; onFlipY:()=>void
   onResize:(w:number,h:number)=>void; onCrop:(t:number,r:number,b:number,l:number)=>void
+  imageDims:{w:number;h:number}|null; hasImage:boolean
 }) {
   const [rw,setRw]=useState(512); const [rh,setRh]=useState(512)
+  const [lockAspect,setLockAspect]=useState(true)
   const [ct,setCt]=useState(0); const [cr,setCr]=useState(0); const [cb,setCb]=useState(0); const [cl,setCl]=useState(0)
-  const btnCls = "py-2 rounded-xl text-xs font-semibold bg-white/[0.05] hover:bg-white/[0.09] text-gray-300 transition-all active:scale-95"
+  const btnCls = "py-2 rounded-xl text-xs font-semibold bg-white/[0.05] hover:bg-white/[0.09] text-gray-300 transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed"
+
+  // Prefill resize fields with the real image dimensions
+  useEffect(() => {
+    if (imageDims) { setRw(imageDims.w); setRh(imageDims.h) }
+  }, [imageDims])
+
+  const aspect = imageDims ? imageDims.w / imageDims.h : 1
+  const setW = (v: number) => { setRw(v); if (lockAspect && v > 0) setRh(Math.max(1, Math.round(v / aspect))) }
+  const setH = (v: number) => { setRh(v); if (lockAspect && v > 0) setRw(Math.max(1, Math.round(v * aspect))) }
+
+  const inputCls = "mt-1 w-full px-2.5 py-2 text-sm bg-[#0a0a15] border border-white/[0.08] rounded-xl text-gray-200 focus:outline-none focus:border-indigo-500/60 transition-colors"
 
   return (
     <div className="space-y-4">
       <div>
         <p className="text-[11px] text-gray-600 uppercase tracking-wider mb-2">Rotate & Flip</p>
         <div className="grid grid-cols-4 gap-1.5">
-          <button onClick={onRotateCCW} className={btnCls}>↺ CCW</button>
-          <button onClick={onRotateCW}  className={btnCls}>↻ CW</button>
-          <button onClick={onFlipX}     className={btnCls}>↔ H</button>
-          <button onClick={onFlipY}     className={btnCls}>↕ V</button>
+          <button onClick={onRotateCCW} disabled={!hasImage} className={btnCls} title="Rotate 90° counter-clockwise">↺ CCW</button>
+          <button onClick={onRotateCW}  disabled={!hasImage} className={btnCls} title="Rotate 90° clockwise">↻ CW</button>
+          <button onClick={onFlipX}     disabled={!hasImage} className={btnCls} title="Flip horizontally">↔ H</button>
+          <button onClick={onFlipY}     disabled={!hasImage} className={btnCls} title="Flip vertically">↕ V</button>
         </div>
       </div>
       <div>
-        <p className="text-[11px] text-gray-600 uppercase tracking-wider mb-2">Resize</p>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] text-gray-600 uppercase tracking-wider">Resize</p>
+          <label className="flex items-center gap-1.5 text-[11px] text-gray-500 cursor-pointer select-none">
+            <input type="checkbox" checked={lockAspect} onChange={e=>setLockAspect(e.target.checked)}
+              className="w-3 h-3 accent-indigo-500" />
+            Lock ratio
+          </label>
+        </div>
         <div className="flex gap-2 items-end">
           <label className="flex-1 text-[11px] text-gray-500">
             W (px)
-            <input type="number" value={rw} min={1} max={4096} onChange={e=>setRw(+e.target.value)}
-              className="mt-1 w-full px-2.5 py-2 text-sm bg-[#0a0a15] border border-white/[0.08] rounded-xl text-gray-200 focus:outline-none focus:border-indigo-500/60 transition-colors" />
+            <input type="number" value={rw || ''} min={1} max={8192} onChange={e=>setW(+e.target.value)} className={inputCls} />
           </label>
           <label className="flex-1 text-[11px] text-gray-500">
             H (px)
-            <input type="number" value={rh} min={1} max={4096} onChange={e=>setRh(+e.target.value)}
-              className="mt-1 w-full px-2.5 py-2 text-sm bg-[#0a0a15] border border-white/[0.08] rounded-xl text-gray-200 focus:outline-none focus:border-indigo-500/60 transition-colors" />
+            <input type="number" value={rh || ''} min={1} max={8192} onChange={e=>setH(+e.target.value)} className={inputCls} />
           </label>
-          <button onClick={()=>onResize(rw,rh)}
-            className="px-3 py-2 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all active:scale-95 shadow-lg shadow-indigo-500/20">
+          <button onClick={()=>onResize(rw,rh)} disabled={!hasImage || !rw || !rh}
+            className="px-3 py-2 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all active:scale-95 shadow-lg shadow-indigo-500/20 disabled:opacity-40 disabled:cursor-not-allowed">
             Apply
           </button>
         </div>
@@ -189,10 +218,18 @@ function TransformTab({ onRotateCW,onRotateCCW,onFlipX,onFlipY,onResize,onCrop }
             <Slider key={l} label={l} value={v} min={0} max={49} onChange={fn} display={`${v}%`} />
           ))}
         </div>
-        <button onClick={()=>onCrop(ct,cr,cb,cl)}
-          className="mt-3 w-full py-2 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all active:scale-95">
-          Apply Crop
-        </button>
+        <div className="flex gap-1.5 mt-3">
+          <button onClick={()=>{ onCrop(ct,cr,cb,cl); setCt(0);setCr(0);setCb(0);setCl(0) }}
+            disabled={!hasImage || (ct===0&&cr===0&&cb===0&&cl===0)}
+            className="flex-1 py-2 text-xs rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">
+            Apply Crop
+          </button>
+          <button onClick={()=>{ setCt(0);setCr(0);setCb(0);setCl(0) }}
+            disabled={ct===0&&cr===0&&cb===0&&cl===0}
+            className="px-3 py-2 text-xs rounded-xl bg-white/[0.05] hover:bg-white/[0.09] text-gray-400 transition-all disabled:opacity-30">
+            Clear
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -254,6 +291,8 @@ const TABS: { id: Tab; icon: React.ReactNode }[] = [
 
 interface Props {
   loading: boolean
+  hasImage: boolean
+  imageDims: {w:number;h:number} | null
   onApplyAlgorithm:(f:FilterType,p:{kernelSize:number;sigma:number;k:number})=>void
   colorFilter:ColorFilterName; onColorFilterChange:(f:ColorFilterName)=>void
   adjustments:Adjustments; onAdjustmentsChange:(a:Adjustments)=>void
@@ -287,10 +326,10 @@ export default function ControlPanel(p: Props) {
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto p-4 min-h-0">
-        {tab==='Algorithms' && <AlgorithmsTab onApply={p.onApplyAlgorithm} loading={p.loading} />}
+        {tab==='Algorithms' && <AlgorithmsTab onApply={p.onApplyAlgorithm} loading={p.loading} hasImage={p.hasImage} />}
         {tab==='Filters'    && <FiltersTab value={p.colorFilter} onChange={p.onColorFilterChange} />}
         {tab==='Adjust'     && <AdjustTab adj={p.adjustments} onChange={p.onAdjustmentsChange} />}
-        {tab==='Transform'  && <TransformTab onRotateCW={p.onRotateCW} onRotateCCW={p.onRotateCCW} onFlipX={p.onFlipX} onFlipY={p.onFlipY} onResize={p.onResize} onCrop={p.onCrop} />}
+        {tab==='Transform'  && <TransformTab onRotateCW={p.onRotateCW} onRotateCCW={p.onRotateCCW} onFlipX={p.onFlipX} onFlipY={p.onFlipY} onResize={p.onResize} onCrop={p.onCrop} imageDims={p.imageDims} hasImage={p.hasImage} />}
         {tab==='Brush'      && <BrushTab activeTool={p.activeTool} setActiveTool={p.setActiveTool} brushSize={p.brushSize} setBrushSize={p.setBrushSize} brushStrength={p.brushStrength} setBrushStrength={p.setBrushStrength} />}
       </div>
     </div>

@@ -175,14 +175,42 @@ export async function fileToImageData(file: File): Promise<{imgData: ImageData; 
 }
 
 export function blobUrlToImageData(url: string): Promise<{imgData: ImageData; width: number; height: number}> {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
+      URL.revokeObjectURL(url)
       const c = document.createElement('canvas')
       c.width = img.naturalWidth; c.height = img.naturalHeight
-      c.getContext('2d')!.drawImage(img, 0, 0)
-      resolve({ imgData: c.getContext('2d')!.getImageData(0,0,c.width,c.height), width:c.width, height:c.height })
+      const ctx = c.getContext('2d')!
+      ctx.drawImage(img, 0, 0)
+      resolve({ imgData: ctx.getImageData(0, 0, c.width, c.height), width: c.width, height: c.height })
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Could not decode that image — the file may be corrupt or unsupported.'))
     }
     img.src = url
   })
+}
+
+export function imageDataToBlob(imgData: ImageData): Promise<Blob> {
+  const c = document.createElement('canvas')
+  c.width = imgData.width; c.height = imgData.height
+  c.getContext('2d')!.putImageData(imgData, 0, 0)
+  return new Promise((resolve, reject) =>
+    c.toBlob(b => (b ? resolve(b) : reject(new Error('Failed to encode image.'))), 'image/png'),
+  )
+}
+
+export function scaleImageData(src: ImageData, w: number, h: number): ImageData {
+  const from = document.createElement('canvas')
+  from.width = src.width; from.height = src.height
+  from.getContext('2d')!.putImageData(src, 0, 0)
+  const to = document.createElement('canvas')
+  to.width = w; to.height = h
+  const ctx = to.getContext('2d')!
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(from, 0, 0, w, h)
+  return ctx.getImageData(0, 0, w, h)
 }

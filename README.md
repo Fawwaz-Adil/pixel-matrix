@@ -15,8 +15,13 @@ A browser-based image editor with client-side adjustments and server-side matrix
 | **Filters** | 14 instant colour presets (sepia, cyberpunk, noir, …) applied client-side via raw pixel ops |
 | **Adjustments** | Brightness, contrast, saturation, sharpness (unsharp mask), blur, vignette, grain |
 | **Transform** | Rotate ±90°, flip H/V, resize, percentage crop |
-| **Brush tools** | Blur, Mosaic, Dodge, and Burn brushes painted directly on the canvas |
+| **Brush tools** | Blur, Mosaic, Dodge, and Burn brushes painted directly on the canvas (works on rotated/flipped views, touch supported) |
 | **History** | 25-step undo/redo stack |
+| **Compare & reset** | Hold the eye button (or `C`) to peek at the original; one-click reset back to it |
+
+> Server algorithms run on the **current** image (edits preserved) and results are
+> restored to the original dimensions — large images are processed at a capped
+> resolution server-side for serverless latency, then scaled back client-side.
 
 ---
 

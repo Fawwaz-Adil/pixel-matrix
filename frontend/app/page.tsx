@@ -18,15 +18,47 @@ export default function Home() {
 
   // Keyboard shortcuts
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); ed.undo() }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); ed.redo() }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'o') { e.preventDefault(); uploadRef.current?.click() }
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); ed.downloadImage() }
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null
+      return !!el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && (el as HTMLInputElement).type !== 'range'))
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    const down = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return
+      const key = e.key.toLowerCase()
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && !e.shiftKey && key === 'z') { e.preventDefault(); ed.undo() }
+      else if (mod && (key === 'y' || (e.shiftKey && key === 'z'))) { e.preventDefault(); ed.redo() }
+      else if (mod && key === 'o') { e.preventDefault(); uploadRef.current?.click() }
+      else if (mod && key === 's') { e.preventDefault(); ed.downloadImage() }
+      else if (!mod && key === 'c' && !e.repeat) ed.startCompare()
+    }
+    const up = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === 'c') ed.endCompare()
+    }
+    const blur = () => ed.endCompare()
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('blur', blur) }
   }, [ed])
+
+  // Warn before leaving with unsaved edits
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (ed.canUndo) { e.preventDefault(); e.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [ed.canUndo])
+
+  // Auto-dismiss errors
+  useEffect(() => {
+    if (!ed.error) return
+    const t = setTimeout(ed.clearError, 6000)
+    return () => clearTimeout(t)
+  }, [ed.error, ed.clearError])
+
+  const iconBtn = "p-2 rounded-lg hover:bg-white/[0.06] text-gray-500 hover:text-white disabled:opacity-25 disabled:cursor-not-allowed transition-all active:scale-90"
 
   return (
     <div className="flex flex-col h-screen overflow-hidden" style={{background:'#08080f'}}>
@@ -60,28 +92,48 @@ export default function Home() {
 
         {/* Undo / Redo */}
         <div className="flex items-center">
-          <button onClick={ed.undo} disabled={!ed.canUndo} title="Undo (Ctrl+Z)"
-            className="p-2 rounded-lg hover:bg-white/[0.06] text-gray-500 hover:text-white disabled:opacity-25 disabled:cursor-not-allowed transition-all active:scale-90">
+          <button onClick={ed.undo} disabled={!ed.canUndo} title="Undo (Ctrl+Z)" className={iconBtn}>
             <Ico><path d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3"/></Ico>
           </button>
-          <button onClick={ed.redo} disabled={!ed.canRedo} title="Redo (Ctrl+Y)"
-            className="p-2 rounded-lg hover:bg-white/[0.06] text-gray-500 hover:text-white disabled:opacity-25 disabled:cursor-not-allowed transition-all active:scale-90">
+          <button onClick={ed.redo} disabled={!ed.canRedo} title="Redo (Ctrl+Y)" className={iconBtn}>
             <Ico><path d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3"/></Ico>
+          </button>
+        </div>
+
+        <div className="w-px h-5 bg-white/[0.08]" />
+
+        {/* Compare (hold) + Reset */}
+        <div className="flex items-center">
+          <button
+            disabled={!ed.hasImage}
+            title="Hold to see the original (or hold C)"
+            className={`${iconBtn} ${ed.comparing ? 'bg-indigo-600/30 text-indigo-300' : ''}`}
+            onPointerDown={ed.startCompare}
+            onPointerUp={ed.endCompare}
+            onPointerLeave={ed.endCompare}
+            onContextMenu={e => e.preventDefault()}>
+            <Ico><path d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></Ico>
+          </button>
+          <button onClick={ed.resetImage} disabled={!ed.hasImage} title="Reset to original (undoable)" className={iconBtn}>
+            <Ico><path d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></Ico>
           </button>
         </div>
 
         {/* Active tool badge */}
         {ed.activeTool !== 'none' && (
-          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium"
+          <span className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium"
             style={{background:'rgba(99,102,241,.15)',border:'1px solid rgba(99,102,241,.3)',color:'#a5b4fc'}}>
             <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
             {TOOL_LABEL[ed.activeTool]}
           </span>
         )}
 
-        {/* Error */}
-        {ed.error && (
-          <span className="text-xs text-red-400 max-w-[180px] truncate hidden md:block">{ed.error}</span>
+        {/* Comparing badge */}
+        {ed.comparing && (
+          <span className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium"
+            style={{background:'rgba(16,185,129,.15)',border:'1px solid rgba(16,185,129,.3)',color:'#6ee7b7'}}>
+            Original
+          </span>
         )}
 
         <div className="flex-1" />
@@ -113,6 +165,8 @@ export default function Home() {
           style={{background:'rgba(11,11,20,0.95)'}}>
           <ControlPanel
             loading={ed.loading}
+            hasImage={ed.hasImage}
+            imageDims={ed.imageDims}
             onApplyAlgorithm={ed.applyAlgorithm}
             colorFilter={ed.colorFilter}
             onColorFilterChange={ed.setColorFilter}
@@ -149,10 +203,26 @@ export default function Home() {
         </main>
       </div>
 
+      {/* ── Error toast ──────────────────────────────────────────────────── */}
+      {ed.error && (
+        <div className="fixed bottom-12 right-4 z-50 toast-in">
+          <div className="flex items-start gap-3 max-w-sm px-4 py-3 rounded-xl shadow-2xl"
+            style={{background:'rgba(30,10,16,0.95)', border:'1px solid rgba(239,68,68,.35)', backdropFilter:'blur(12px)'}}>
+            <span className="mt-0.5 text-red-400 shrink-0">
+              <Ico><path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></Ico>
+            </span>
+            <p className="text-xs text-red-200 leading-relaxed">{ed.error}</p>
+            <button onClick={ed.clearError} className="text-red-400/60 hover:text-red-300 shrink-0 transition-colors" aria-label="Dismiss">
+              <Ico size={14}><path d="M6 18L18 6M6 6l12 12"/></Ico>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Keyboard hint bar ────────────────────────────────────────────── */}
-      <footer className="h-7 shrink-0 flex items-center px-4 gap-4 border-t border-white/[0.04]"
+      <footer className="h-7 shrink-0 hidden sm:flex items-center px-4 gap-4 border-t border-white/[0.04]"
         style={{background:'rgba(8,8,15,0.8)'}}>
-        {[['Ctrl+Z','Undo'],['Ctrl+Y','Redo'],['Ctrl+O','Open'],['Ctrl+S','Save']].map(([k,l])=>(
+        {[['Ctrl+Z','Undo'],['Ctrl+Y','Redo'],['Ctrl+O','Open'],['Ctrl+S','Save'],['Hold C','Compare']].map(([k,l])=>(
           <span key={k} className="flex items-center gap-1.5 text-[10px] text-gray-700">
             <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] text-gray-600 font-mono text-[9px]">{k}</kbd>
             {l}

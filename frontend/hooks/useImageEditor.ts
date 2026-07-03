@@ -5,7 +5,7 @@ import {
   applyBrightness, applyContrast, applySaturation, applySharpness,
   applyVignette, applyGrain, applyColorFilter,
   blurRegion, pixelateRegion, lightenRegion, darkenRegion,
-  blobUrlToImageData,
+  blobUrlToImageData, imageDataToBlob, scaleImageData,
   type ColorFilterName,
 } from '@/lib/imageOps'
 import { applyFilter as callBackendFilter, type FilterType } from '@/lib/api'
@@ -20,17 +20,19 @@ export const DEFAULT_ADJ: Adjustments = {
   brightness:0, contrast:0, saturation:0, sharpness:0, blur:0, vignette:0, grain:0,
 }
 
+const MAX_DIMENSION = 8192
+
 function cloneImageData(src: ImageData): ImageData {
   return new ImageData(new Uint8ClampedArray(src.data), src.width, src.height)
 }
 
 export function useImageEditor() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const sourceRef = useRef<ImageData | null>(null)
-  const fileRef   = useRef<File | null>(null)
+  const canvasRef   = useRef<HTMLCanvasElement | null>(null)
+  const sourceRef   = useRef<ImageData | null>(null)
+  const originalRef = useRef<ImageData | null>(null)
 
   // "latest ref" pattern — render() reads these instead of closing over state
-  const stateRef = useRef({ adjustments: DEFAULT_ADJ, colorFilter: 'none' as ColorFilterName, rotation: 0, flipX: false, flipY: false })
+  const stateRef = useRef({ adjustments: DEFAULT_ADJ, colorFilter: 'none' as ColorFilterName, rotation: 0, flipX: false, flipY: false, comparing: false })
   const toolRef  = useRef({ activeTool: 'none' as ActiveTool, brushSize: 30, brushStrength: 40 })
 
   // Undo / redo stacks
@@ -45,6 +47,7 @@ export function useImageEditor() {
   const [rotation,     setRotation]     = useState(0)
   const [flipX,        setFlipX]        = useState(false)
   const [flipY,        setFlipY]        = useState(false)
+  const [comparing,    setComparing]    = useState(false)
   const [activeTool,   setActiveTool]   = useState<ActiveTool>('none')
   const [brushSize,    setBrushSize]    = useState(30)
   const [brushStrength,setBrushStrength]= useState(40)
@@ -53,8 +56,10 @@ export function useImageEditor() {
   const [imageDims,    setImageDims]    = useState<{w:number;h:number}|null>(null)
   const [renderKey,    setRenderKey]    = useState(0)
 
-  stateRef.current = { adjustments, colorFilter, rotation, flipX, flipY }
+  stateRef.current = { adjustments, colorFilter, rotation, flipX, flipY, comparing }
   toolRef.current  = { activeTool, brushSize, brushStrength }
+
+  const clearError = useCallback(() => setError(null), [])
 
   // ── History ────────────────────────────────────────────────────────────────
   const pushHistory = useCallback(() => {
@@ -88,7 +93,16 @@ export function useImageEditor() {
     const canvas = canvasRef.current, src = sourceRef.current
     if (!canvas || !src) return
     const ctx = canvas.getContext('2d')!
-    const { adjustments: adj, colorFilter: cf, rotation: rot, flipX: fx, flipY: fy } = stateRef.current
+    const { adjustments: adj, colorFilter: cf, rotation: rot, flipX: fx, flipY: fy, comparing: cmp } = stateRef.current
+
+    // Hold-to-compare: show the untouched original
+    if (cmp && originalRef.current) {
+      const orig = originalRef.current
+      canvas.width = orig.width; canvas.height = orig.height
+      ctx.putImageData(orig, 0, 0)
+      return
+    }
+
     const W = src.width, H = src.height
 
     let work = new ImageData(new Uint8ClampedArray(src.data), W, H)
@@ -120,48 +134,77 @@ export function useImageEditor() {
     ctx.restore()
   }, [])
 
-  useEffect(() => { render() }, [adjustments, colorFilter, rotation, flipX, flipY, renderKey, render])
+  useEffect(() => { render() }, [adjustments, colorFilter, rotation, flipX, flipY, comparing, renderKey, render])
 
   // ── Load image ──────────────────────────────────────────────────────────────
   const loadImage = useCallback(async (file: File) => {
-    fileRef.current = file
+    if (!file.type.startsWith('image/')) {
+      setError('That file is not an image — please choose a PNG, JPG or WEBP.')
+      return
+    }
     setError(null)
-    const { imgData } = await blobUrlToImageData(URL.createObjectURL(file))
-    sourceRef.current = imgData
-    undoStack.current = []; redoStack.current = []
-    setCanUndo(false); setCanRedo(false)
-    setAdjustments(DEFAULT_ADJ); setColorFilter('none')
-    setRotation(0); setFlipX(false); setFlipY(false)
-    setActiveTool('none')
-    setImageDims({ w: imgData.width, h: imgData.height })
-    setHasImage(true)
-    setRenderKey(k => k + 1)
+    try {
+      const { imgData } = await blobUrlToImageData(URL.createObjectURL(file))
+      sourceRef.current = imgData
+      originalRef.current = cloneImageData(imgData)
+      undoStack.current = []; redoStack.current = []
+      setCanUndo(false); setCanRedo(false)
+      setAdjustments(DEFAULT_ADJ); setColorFilter('none')
+      setRotation(0); setFlipX(false); setFlipY(false)
+      setComparing(false); setActiveTool('none')
+      setImageDims({ w: imgData.width, h: imgData.height })
+      setHasImage(true)
+      setRenderKey(k => k + 1)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load image.')
+    }
   }, [])
 
   // ── Algorithm ───────────────────────────────────────────────────────────────
+  // Sends the CURRENT image (with all edits baked in, EXIF already normalised by
+  // the browser) and restores the original dimensions if the backend downscaled.
   const applyAlgorithm = useCallback(async (
     filter: FilterType,
     params: { kernelSize: number; sigma: number; k: number }
   ) => {
-    if (!fileRef.current) return
-    pushHistory()
+    const src = sourceRef.current
+    if (!src) return
     setLoading(true); setError(null)
     try {
-      const url = await callBackendFilter(fileRef.current, filter, params)
-      const { imgData } = await blobUrlToImageData(url)
+      const payload = await imageDataToBlob(src)
+      const resultBlob = await callBackendFilter(payload, filter, params)
+      let { imgData } = await blobUrlToImageData(URL.createObjectURL(resultBlob))
+      if (imgData.width !== src.width || imgData.height !== src.height) {
+        imgData = scaleImageData(imgData, src.width, src.height)
+      }
+      pushHistory()
       sourceRef.current = imgData
       setImageDims({ w: imgData.width, h: imgData.height })
       setRenderKey(k => k + 1)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed'); undoStack.current.pop()
+      setError(e instanceof Error ? e.message : 'Processing failed.')
     } finally {
       setLoading(false)
     }
   }, [pushHistory])
 
   // ── Brush ───────────────────────────────────────────────────────────────────
-  const doPaint = useCallback((x: number, y: number) => {
-    const src = sourceRef.current; if (!src) return
+  const doPaint = useCallback((cx: number, cy: number) => {
+    const src = sourceRef.current, canvas = canvasRef.current
+    if (!src || !canvas) return
+    const { rotation: rot, flipX: fx, flipY: fy, comparing: cmp } = stateRef.current
+    if (cmp) return
+
+    // Canvas coords → source coords: invert the render transform so strokes
+    // land where the cursor is even when the view is rotated or flipped
+    const rad = (-rot * Math.PI) / 180
+    const dx = cx - canvas.width / 2, dy = cy - canvas.height / 2
+    let sx = dx * Math.cos(rad) - dy * Math.sin(rad)
+    let sy = dx * Math.sin(rad) + dy * Math.cos(rad)
+    if (fx) sx = -sx
+    if (fy) sy = -sy
+    const x = sx + src.width / 2, y = sy + src.height / 2
+
     const { activeTool: tool, brushSize: bs, brushStrength: str } = toolRef.current
     switch (tool) {
       case 'blur':      blurRegion(src, x, y, bs, str / 5); break
@@ -180,14 +223,13 @@ export function useImageEditor() {
 
   const applyResize = useCallback((w: number, h: number) => {
     const src = sourceRef.current; if (!src) return
+    w = Math.round(w); h = Math.round(h)
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1 || w > MAX_DIMENSION || h > MAX_DIMENSION) {
+      setError(`Resize dimensions must be between 1 and ${MAX_DIMENSION} px.`)
+      return
+    }
     pushHistory()
-    const tmp = document.createElement('canvas')
-    tmp.width = src.width; tmp.height = src.height
-    tmp.getContext('2d')!.putImageData(src, 0, 0)
-    const out = document.createElement('canvas')
-    out.width = w; out.height = h
-    out.getContext('2d')!.drawImage(tmp, 0, 0, w, h)
-    sourceRef.current = out.getContext('2d')!.getImageData(0, 0, w, h)
+    sourceRef.current = scaleImageData(src, w, h)
     setImageDims({ w, h })
     setRenderKey(k => k + 1)
   }, [pushHistory])
@@ -210,9 +252,24 @@ export function useImageEditor() {
     setRenderKey(k => k + 1)
   }, [pushHistory])
 
+  // ── Compare & reset ──────────────────────────────────────────────────────────
+  const startCompare = useCallback(() => { if (originalRef.current) setComparing(true) }, [])
+  const endCompare   = useCallback(() => setComparing(false), [])
+
+  const resetImage = useCallback(() => {
+    const orig = originalRef.current; if (!orig) return
+    pushHistory()
+    sourceRef.current = cloneImageData(orig)
+    setAdjustments(DEFAULT_ADJ); setColorFilter('none')
+    setRotation(0); setFlipX(false); setFlipY(false)
+    setImageDims({ w: orig.width, h: orig.height })
+    setRenderKey(k => k + 1)
+  }, [pushHistory])
+
   // ── Download ─────────────────────────────────────────────────────────────────
   const downloadImage = useCallback(() => {
-    const canvas = canvasRef.current; if (!canvas) return
+    const canvas = canvasRef.current; if (!canvas || !sourceRef.current) return
+    if (stateRef.current.comparing) { setComparing(false); return }
     const a = document.createElement('a')
     a.href = canvas.toDataURL('image/png')
     a.download = 'pixel-matrix-edit.png'
@@ -220,10 +277,11 @@ export function useImageEditor() {
   }, [])
 
   return {
-    canvasRef, hasImage, loading, error, imageDims,
+    canvasRef, hasImage, loading, error, clearError, imageDims,
     adjustments, setAdjustments,
     colorFilter, setColorFilter,
     rotation, flipX, flipY,
+    comparing, startCompare, endCompare, resetImage,
     activeTool, setActiveTool,
     brushSize, setBrushSize,
     brushStrength, setBrushStrength,

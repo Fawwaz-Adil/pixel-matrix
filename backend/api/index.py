@@ -6,8 +6,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
-from PIL import Image
-from fastapi import FastAPI, File, Form, UploadFile
+from PIL import Image, ImageOps
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
@@ -26,7 +26,12 @@ MAX_DIM = 512  # cap image size to keep serverless latency reasonable
 
 
 def _load(file: UploadFile, max_dim: int = MAX_DIM) -> np.ndarray:
-    img = Image.open(file.file).convert("RGB")
+    try:
+        img = Image.open(file.file)
+        # Honour EXIF orientation so photos aren't returned rotated/flipped
+        img = ImageOps.exif_transpose(img).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=422, detail="Could not decode the uploaded image.")
     if max(img.size) > max_dim:
         img.thumbnail((max_dim, max_dim), Image.LANCZOS)
     return np.array(img)
@@ -38,12 +43,19 @@ def _png_response(arr: np.ndarray) -> Response:
     return Response(content=buf.getvalue(), media_type="image/png")
 
 
+@app.get("/")
+async def health():
+    return {"status": "ok", "service": "pixel-matrix-api"}
+
+
 @app.post("/api/gaussian")
 async def apply_gaussian(
     image: UploadFile = File(...),
     kernel_size: int = Form(5),
     sigma: float = Form(1.0),
 ):
+    kernel_size = max(3, min(31, kernel_size))
+    sigma = max(0.1, min(10.0, sigma))
     arr = _load(image)
     return _png_response(gaussian_blur(arr, kernel_size=kernel_size, sigma=sigma))
 
@@ -59,6 +71,7 @@ async def apply_kmeans(
     image: UploadFile = File(...),
     k: int = Form(8),
 ):
+    k = max(2, min(32, k))
     arr = _load(image, max_dim=256)  # smaller cap — K-Means is O(N·K) per iter
     return _png_response(kmeans_quantize(arr, k=k))
 

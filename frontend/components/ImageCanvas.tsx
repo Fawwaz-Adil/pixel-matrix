@@ -23,7 +23,7 @@ export default function ImageCanvas({
   const inputRef   = useRef<HTMLInputElement>(null)
   const [drag, setDrag] = useState(false)
 
-  const getCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const c = canvasRef.current!
     const r = c.getBoundingClientRect()
     return {
@@ -32,12 +32,32 @@ export default function ImageCanvas({
     }
   }
 
-  const scaledBrush = canvasRef.current
+  const scaledBrush = canvasRef.current && canvasRef.current.width > 0
     ? brushSize * (canvasRef.current.getBoundingClientRect().width / canvasRef.current.width)
     : brushSize
 
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setDrag(false)
+    const f = e.dataTransfer.files[0]
+    if (f?.type.startsWith('image/')) onUpload(f)
+  }
+
   return (
-    <div className="relative w-full h-full flex items-center justify-center">
+    <div
+      className="relative w-full h-full flex items-center justify-center"
+      onDrop={handleDrop}
+      onDragOver={e => { e.preventDefault(); setDrag(true) }}
+      onDragLeave={e => { if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) setDrag(false) }}
+    >
+      {/* Drop-to-replace overlay (shown while dragging over a loaded image) */}
+      {hasImage && drag && (
+        <div className="absolute inset-3 z-30 rounded-2xl border-2 border-dashed border-indigo-400 bg-indigo-500/10 backdrop-blur-[2px] flex items-center justify-center pointer-events-none">
+          <span className="px-4 py-2 rounded-xl bg-[#0a0a18]/90 border border-indigo-500/40 text-indigo-200 text-sm font-medium">
+            Drop to replace image
+          </span>
+        </div>
+      )}
+
       {hasImage ? (
         <div className="relative group">
           {/* Glow backdrop */}
@@ -46,7 +66,7 @@ export default function ImageCanvas({
           {/* Canvas wrapper with checkerboard */}
           <div className="relative rounded-2xl overflow-hidden checkerboard shadow-2xl ring-1 ring-white/10">
             {/* Brush ring */}
-            {activeTool !== 'none' && cursor && (
+            {activeTool !== 'none' && cursor && !loading && (
               <div
                 className="pointer-events-none absolute rounded-full border-2 border-white/70 mix-blend-difference z-20 transition-none"
                 style={{
@@ -75,21 +95,28 @@ export default function ImageCanvas({
                 maxHeight: 'calc(100vh - 160px)',
                 display: 'block',
                 cursor: activeTool !== 'none' ? 'none' : 'default',
+                touchAction: activeTool !== 'none' ? 'none' : 'auto',
               }}
-              onMouseDown={e => {
-                if (activeTool === 'none') return
+              onPointerDown={e => {
+                if (activeTool === 'none' || loading) return
+                e.preventDefault()
+                try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* pointer already gone */ }
                 onBrushStart()
                 painting.current = true
                 const c = getCoords(e); onBrushPaint(c.x, c.y)
               }}
-              onMouseMove={e => {
+              onPointerMove={e => {
                 const r = canvasRef.current?.getBoundingClientRect()
                 if (r) setCursor({ x: e.clientX - r.left, y: e.clientY - r.top })
-                if (!painting.current || activeTool === 'none') return
+                if (!painting.current || activeTool === 'none' || loading) return
                 const c = getCoords(e); onBrushPaint(c.x, c.y)
               }}
-              onMouseUp={() => { painting.current = false }}
-              onMouseLeave={() => { painting.current = false; setCursor(null) }}
+              onPointerUp={e => {
+                painting.current = false
+                try { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* already released */ }
+              }}
+              onPointerCancel={() => { painting.current = false }}
+              onPointerLeave={() => { if (!painting.current) setCursor(null) }}
             />
           </div>
         </div>
@@ -102,9 +129,6 @@ export default function ImageCanvas({
               : 'border-white/10 hover:border-white/20 hover:bg-white/[0.02]'
             }`}
           onClick={() => inputRef.current?.click()}
-          onDrop={e => { e.preventDefault(); setDrag(false); const f=e.dataTransfer.files[0]; if(f?.type.startsWith('image/')) onUpload(f) }}
-          onDragOver={e => { e.preventDefault(); setDrag(true) }}
-          onDragLeave={() => setDrag(false)}
         >
           <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-600/20 to-purple-600/20 border border-indigo-500/20 flex items-center justify-center">
             <svg className="w-9 h-9 text-indigo-400/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -120,7 +144,7 @@ export default function ImageCanvas({
             Choose file
           </span>
           <input ref={inputRef} type="file" accept="image/*" className="hidden"
-            onChange={e => { const f=e.target.files?.[0]; if(f) onUpload(f) }} />
+            onChange={e => { const f=e.target.files?.[0]; if(f) onUpload(f); e.target.value='' }} />
         </div>
       )}
     </div>
